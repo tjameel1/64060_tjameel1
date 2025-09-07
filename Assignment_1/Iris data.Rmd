@@ -1,0 +1,104 @@
+---
+title: "iris"
+author: "Tara Jameel"
+date: "2025-09-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+# In R:
+install.packages("remotes")               # if you don’t already have it
+remotes::install_github("coatless-rpkg/ucimlrepo")
+library(ucimlrepo)
+# View the first few rows
+head(iris)
+# View the structure of the dataset
+str(iris)
+# Summary statistics
+summary(iris)
+# Quantitative variables: Sepal.Length, Sepal.Width, Petal.Length, Petal.Width
+quantitative_vars <- iris[, 1:4]
+# Summary statistics
+summary(quantitative_vars)
+# Additional statistics
+mean_values <- colMeans(quantitative_vars)
+sd_values <- apply(quantitative_vars, 2, sd)
+median_values <- apply(quantitative_vars, 2, median)
+range_values <- apply(quantitative_vars, 2, range)
+# Combine into a data frame
+quantitative_stats <- data.frame(
+  Mean = mean_values,
+  SD = sd_values,
+  Median = median_values,
+  Min = range_values[1,],
+  Max = range_values[2,]
+)
+print(quantitative_stats)
+# Categorical variable: Species
+categorical_var <- iris$Species
+# Frequency table
+species_table <- table(categorical_var)
+# Relative frequencies
+species_rel_freq <- prop.table(species_table)
+# Combine into a data frame
+categorical_stats <- data.frame(
+  Frequency = species_table,
+  Relative_Frequency = species_rel_freq
+)
+str(iris)
+iris$Petal.Length <- as.numeric(iris$Petal.Length)
+# Check for missing values
+sum(is.na(iris$Petal.Length))
+
+
+# Apply log transformation to Sepal.Width
+iris$Log_Sepal_Width <- log(iris$Sepal.Width + 1)  # Adding 1 to avoid log(0)
+
+data(iris)
+iris_clean <- na.omit(iris)
+iris$Log_Petal_Length <- log(iris$Petal.Length + 1)  # Adding 1 to avoid log(0)
+# Load ggplot2 for plotting
+library(ggplot2)
+
+# Plot histograms
+par(mfrow = c(1, 2)) # Set up the plotting area
+
+# Original Petal.Length
+hist(iris$Petal.Length, main = "Original Petal Length", xlab = "Petal Length", col = "lightblue", border = "black")
+
+# Transformed Log_Petal_Length
+hist(iris$Log_Petal_Length, main = "Log Transformed Petal Length", xlab = "Log(Petal Length)", col = "lightgreen", border = "black")
+
+# Load necessary library
+library(ggplot2)
+# Create histogram for Sepal.Length
+ggplot(iris, aes(x = Sepal.Length)) +
+  geom_histogram(binwidth = 0.2, fill = "skyblue", color = "black", alpha = 0.7) +
+  labs(title = "Distribution of Sepal Length", x = "Sepal Length (cm)", y = "Frequency") +
+  theme_minimal()
+  
+  # Create scatterplot for Petal.Length vs Petal.Width
+ggplot(iris, aes(x = Petal.Length, y = Petal.Width, color = Species)) +
+  geom_point(alpha = 0.7) +
+  labs(title = "Petal Length vs Petal Width", x = "Petal Length (cm)", y = "Petal Width (cm)") +
+  theme_minimal()
