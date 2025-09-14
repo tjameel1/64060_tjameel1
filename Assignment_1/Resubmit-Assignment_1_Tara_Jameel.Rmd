@@ -1,0 +1,190 @@
+---
+title: "Iris"
+author: "Tara Jameel"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+fontsize: 11pt
+geometry: margin=1in
+---
+
+# Introduction
+
+I selected the Iris dataset, which contains both quantitative and categorical variables, to demonstrate descriptive statistics, variable transformation, and graphical representations. The goal is to explore the dataset, summarize its key characteristics, and present insights using proper R Markdown documentation.
+
+**Variables**
+
+| Variable         | Type          | Description                                      |
+|------------------|---------------|--------------------------------------------------|
+| Sepal.Length     | Numeric (cm)  | Length of sepals                                 |
+| Sepal.Width      | Numeric (cm)  | Width of sepals                                  |
+| Petal.Length     | Numeric (cm)  | Length of petals                                 |
+| Petal.Width      | Numeric (cm)  | Width of petals                                  |
+| Species          | Categorical   | Class label: setosa, versicolor, virginica       |
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 7, fig.height = 5)
+```
+
+```{r libraries}
+library(tidyverse)   # dplyr, ggplot2, readr, etc.
+library(janitor)     # tabyl() for categorical summaries
+```
+
+# 1) Download & Import the Dataset
+
+```{r import}
+uci_url <- "https://archive.ics.uci.edu/ml/machine-learning-databases/iris/iris.data"
+
+try_fetch <- function(url) {
+  suppressWarnings(
+    readr::read_csv(
+      file = url,
+      col_names = FALSE,
+      show_col_types = FALSE
+    )
+  )
+}
+
+df_raw <- tryCatch(try_fetch(uci_url), error = function(e) NULL)
+
+if (is.null(df_raw) || nrow(df_raw) == 0) {
+  message("Falling back to built-in datasets::iris (no/limited internet or URL issue).")
+  df <- as_tibble(datasets::iris)
+} else {
+
+  names(df_raw) <- c("Sepal.Length", "Sepal.Width", "Petal.Length", "Petal.Width", "Species")
+  df <- as_tibble(df_raw)
+}
+
+# Ensure correct types
+df <- df %>%
+  mutate(
+    across(c(Sepal.Length, Sepal.Width, Petal.Length, Petal.Width), as.double),
+    Species = as.factor(Species)
+  )
+
+# Quick checks
+list(
+  dimensions = dim(df),
+  column_types = sapply(df, class)[1:5]
+)
+```
+
+**Interpretation.** The dataset contains **`r nrow(df)`** rows and **`r ncol(df)`** columns. Four are numeric measurements (in centimeters), and **Species** is a 3-level factor (setosa, versicolor, virginica).
+
+# 2) Basic Exploration
+
+```{r explore}
+# Show the first few rows
+head(df, 6)
+
+# Summary statistics by column
+summary(df)
+
+# Dimensions
+dim(df)
+```
+
+
+# 3) Descriptive Statistics
+
+```{r descriptives}
+# Numeric summaries (mean, median, sd) for each numeric column
+num_summary <- df %>%
+  summarise(
+    across(c(Sepal.Length, Sepal.Width, Petal.Length, Petal.Width),
+           list(
+             mean = ~mean(.x, na.rm = TRUE),
+             median = ~median(.x, na.rm = TRUE),
+             sd = ~sd(.x, na.rm = TRUE),
+             min = ~min(.x, na.rm = TRUE),
+             max = ~max(.x, na.rm = TRUE)
+           ),
+           .names = "{.col}_{.fn}")
+  ) %>%
+  pivot_longer(everything(),
+               names_to = c("variable", ".value"),
+               names_sep = "_")
+
+num_summary
+```
+
+**Interpretation.** `Petal.Length` and `Petal.Width` have higher variability across species compared to sepal measurements.
+
+```{r categorical}
+# Mode helper for general vectors
+get_mode <- function(v) {
+  uniq <- unique(v)
+  uniq[which.max(tabulate(match(v, uniq)))]
+}
+
+# Class distribution and modal class
+species_counts <- df %>% tabyl(Species) %>% adorn_totals("row")
+modal_species <- get_mode(df$Species)
+
+species_counts
+modal_species
+```
+
+**Interpretation.** Class frequencies are roughly balanced across the three species in the *Iris* dataset. 
+
+# 4) Transform at Least One Variable
+
+I converted **Petal.Length** from **centimeters to millimeters** and created a standardized (z-score) version as an additional example. This demonstrates both **scaling** and **standardization**.
+
+```{r transform}
+df <- df %>%
+  mutate(
+    Petal.Length.mm = Petal.Length * 10,               # cm -> mm
+    Petal.Length.z  = scale(Petal.Length)[, 1]         # z-score (centered, unit variance)
+  )
+
+# Comparing original vs transformed
+df %>%
+  select(Species, Petal.Length, Petal.Length.mm, Petal.Length.z) %>%
+  slice(1:6)
+```
+
+**Interpretation.** Converting to millimeters scales values by a factor of 10 but does not change relative relationships; the z-score centers the variable at 0 with unit variance, which is useful for models sensitive to feature scales.
+
+# 5) Plots
+
+## 5a) Histogram of a Quantitative Variable
+
+```{r hist, fig.cap="Histogram of Petal.Length (cm)"}
+ggplot(df, aes(x = Petal.Length)) +
+  geom_histogram(binwidth = 0.3) +
+  labs(title = "Histogram of Petal Length (cm)",
+       x = "Petal Length (cm)",
+       y = "Count")
+```
+
+**Interpretation.** The distribution of **Petal.Length** is visibly **tri-modal**, reflecting the three species clusters, with *setosa* having distinctly smaller petals.
+
+## 5b) Scatter Plot of Two Quantitative Variables
+
+```{r scatter, fig.cap="Petal Length vs Petal Width by Species"}
+ggplot(df, aes(x = Petal.Length, y = Petal.Width, color = Species)) +
+  geom_point(alpha = 0.85, size = 2) +
+  labs(title = "Petal Length vs Petal Width by Species",
+       x = "Petal Length (cm)",
+       y = "Petal Width (cm)") +
+  theme(legend.position = "right")
+```
+
+**Interpretation.** There is a strong positive relationship between **Petal.Length** and **Petal.Width**. Species are clearly separated in this 2D space, with *setosa* well apart and *versicolor* and *virginica* partially overlapping.
+
+# 6) Reproducibility Notes
+
+```{r session-info}
+sessionInfo()
+```
+
+# Final interpetation of the results: 
+
+The Iris dataset analysis showed clear distinctions across the three species using descriptive statistics and visualizations. Petal measurements (length and width) exhibited the highest variability and provided the strongest separation between species, as seen in both the histogram and scatter plot. Sepal measurements, while useful, were less effective for distinguishing species.
+The variable transformation (centimeters to millimeters and z-scores) demonstrated how scaling and standardization can prepare data for modeling without changing the underlying relationships. Overall, the analysis confirmed that the dataset is well-structured for classification tasks, with Petal.Length and Petal.Width being the most informative features.
