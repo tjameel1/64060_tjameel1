@@ -1,0 +1,272 @@
+---
+title: "Assignment 2: k-NN on Universal Bank"
+author: "Tara Jameel"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+set.seed(123)
+```
+
+
+# Libraries
+
+```{r}
+# Core
+library(tidyverse)
+library(janitor)
+
+# Modeling
+library(tidymodels)    
+library(kknn)          
+```
+
+
+```{r}
+# ---- Configuration ----
+data_path <- "UniversalBank.csv"   
+
+# ---- Load ----
+raw <- readr::read_csv(data_path) %>% clean_names()
+
+# Inspect
+glimpse(raw)
+summary(select(raw, personal_loan))
+```
+
+## Remove Non-Predictive IDs and Prepare Types
+
+- Drop `id` and `zip_code`.
+- Convert outcome `personal_loan` to factor (success class **"1"**).
+- Ensure categorical columns are proper types; `education` is 1/2/3 → one-hot dummies later.
+- k-NN requires scaling — we will normalize predictors.
+
+```{r}
+bank <- raw %>% 
+  select(-id, -zip_code) %>%
+  mutate(
+    personal_loan = factor(personal_loan, levels = c(0,1), labels = c("0","1")),
+    education = factor(education, levels = c(1,2,3), labels = c("1","2","3"))
+  )
+
+# check 
+bank %>% count(personal_loan) %>% mutate(prop = n / sum(n))
+```
+
+# 60/40 Train Validation Split
+
+```{r}
+set.seed(123)
+split_60_40 <- initial_split(bank, prop = 0.60, strata = personal_loan)
+train_60 <- training(split_60_40)
+valid_40 <- testing(split_60_40)
+
+nrow(train_60); nrow(valid_40)
+```
+
+ 
+
+```{r}
+rec <- recipe(personal_loan ~ ., data = train_60) %>%
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_normalize(all_predictors())
+
+
+rec_prep <- prep(rec)
+train_prepped <- bake(rec_prep, new_data = train_60)
+valid_prepped <- bake(rec_prep, new_data = valid_40)
+
+glimpse(train_prepped)
+```
+
+# Part 1: Classify Given Customer with **k = 1**
+
+Customer profile:
+
+- Age = 40, Experience = 10, Income = 84, Family = 2, CCAvg = 2, Education_2 = 1 (i.e., Education = 2),
+- Mortgage = 0, Securities Account = 0, CD Account = 0, Online = 1, Credit Card = 1.
+
+```{r}
+new_customer_raw <- tibble(
+  age = 40,
+  experience = 10,
+  income = 84,
+  family = 2,
+  cc_avg = 2,
+  education = factor("2", levels = c("1","2","3")),
+  mortgage = 0,
+  securities_account = 0,
+  cd_account = 0,
+  online = 1,
+  credit_card = 1
+)
+
+# (dummies + scaled)
+new_customer_x <- bake(rec_prep, new_data = new_customer_raw)
+
+# Define kNN model with k = 1
+knn_k1 <- nearest_neighbor(mode = "classification", neighbors = 1, weight_func = "rectangular") %>%
+  set_engine("kknn")
+
+# Workflow
+wf_k1 <- workflow() %>%
+  add_model(knn_k1) %>%
+  add_recipe(rec)
+
+# Fit on training data
+fit_k1 <- fit(wf_k1, data = train_60)
+
+# Predict class 
+pred_k1_class <- predict(fit_k1, new_data = new_customer_raw, type = "class")
+pred_k1_prob  <- predict(fit_k1, new_data = new_customer_raw, type = "prob")
+
+pred_k1_class
+pred_k1_prob
+```
+
+> **Answer (Part 1):** The predicted class above indicates whether this customer would be classified as accepting (**1**) or not (**0**) under **k = 1**.
+
+# Part 2: Choose a Good **k** (Bias–Variance Tradeoff)
+
+Test several values of k (like 1 to 25) and choose the one that works best on the validation set. Since only about 10% of customers accepted the loan, focus on balanced accuracy (the average of sensitivity and specificity), but also report overall accuracy
+
+```{r}
+# evaluate a given k on validation set
+eval_k <- function(k){
+  mod <- nearest_neighbor(mode = "classification", neighbors = k, weight_func = "rectangular") %>%
+    set_engine("kknn")
+  wf  <- workflow() %>% add_model(mod) %>% add_recipe(rec)
+  fit <- fit(wf, data = train_60)
+  
+  val_preds <- predict(fit, new_data = valid_40, type = "class") %>% 
+    bind_cols(predict(fit, new_data = valid_40, type = "prob")) %>%
+    bind_cols(valid_40 %>% select(personal_loan)) %>%
+    rename(.pred_class = .pred_class)
+  
+  acc  <- yardstick::accuracy(val_preds, truth = personal_loan, estimate = .pred_class) %>% pull(.estimate)
+  sens <- yardstick::sens(val_preds, truth = personal_loan, estimate = .pred_class, event_level = "second") %>% pull(.estimate)
+  spec <- yardstick::spec(val_preds, truth = personal_loan, estimate = .pred_class, event_level = "second") %>% pull(.estimate)
+  bal  <- mean(c(sens, spec), na.rm = TRUE)
+  
+  tibble(k = k, accuracy = acc, sensitivity = sens, specificity = spec, balanced_accuracy = bal)
+}
+
+ks <- 1:25
+val_grid <- map_dfr(ks, eval_k)
+
+val_grid %>% arrange(desc(balanced_accuracy)) %>% head(10)
+```
+
+Select the **best k** by highest **balanced accuracy** 
+
+```{r}
+best_row <- val_grid %>% 
+  arrange(desc(balanced_accuracy), desc(accuracy), k) %>% 
+  slice(1)
+
+best_k <- best_row$k
+best_row
+```
+
+# Part 3: (Validation, Best k)
+
+```{r}
+# Refit with best k
+knn_best <- nearest_neighbor(mode = "classification", neighbors = best_k, weight_func = "rectangular") %>%
+  set_engine("kknn")
+wf_best <- workflow() %>% add_model(knn_best) %>% add_recipe(rec)
+fit_best <- fit(wf_best, data = train_60)
+
+val_pred_best <- predict(fit_best, new_data = valid_40, type = "class") %>%
+  bind_cols(valid_40 %>% select(personal_loan)) %>%
+  rename(.pred_class = .pred_class)
+
+# Confusion matrix
+cm_valid <- yardstick::conf_mat(val_pred_best, truth = personal_loan, estimate = .pred_class)
+cm_valid
+
+# Metrics
+metrics_valid <- yardstick::metrics(val_pred_best, truth = personal_loan, estimate = .pred_class)
+metrics_valid
+```
+
+# Part 4: Classify the Same Customer Using **Best k**
+
+```{r}
+pred_best_class <- predict(fit_best, new_data = new_customer_raw, type = "class")
+pred_best_prob  <- predict(fit_best, new_data = new_customer_raw, type = "prob")
+
+pred_best_class
+pred_best_prob
+```
+
+> **Answer (Part 4):** The results above give the predicted class and probability for this customer using the best k chosen from the validation set.
+
+# Part 5:  (Train/Validation/Test)
+
+```{r}
+set.seed(123)
+# First split: 50% train, 50% remainder
+split_50 <- initial_split(bank, prop = 0.50, strata = personal_loan)
+train_50 <- training(split_50)
+rem_50   <- testing(split_50)
+
+# Second split on the remainder to get 30% validation and 20% test overall
+split_rem <- initial_split(rem_50, prop = 0.60, strata = personal_loan)
+valid_30  <- training(split_rem)   # ≈30%
+test_20   <- testing(split_rem)    # ≈20%
+
+# New recipe on the 50% training set
+rec2 <- recipe(personal_loan ~ ., data = train_50) %>%
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_normalize(all_predictors())
+
+wf_best2 <- workflow() %>%
+  add_model(knn_best) %>%
+  add_recipe(rec2)
+
+fit_best2 <- fit(wf_best2, data = train_50)
+
+# Evaluate on train, validation, test
+pred_train <- predict(fit_best2, new_data = train_50, type = "class") %>% 
+  bind_cols(train_50 %>% select(personal_loan)) %>%
+  rename(.pred_class = .pred_class)
+
+pred_valid <- predict(fit_best2, new_data = valid_30, type = "class") %>% 
+  bind_cols(valid_30 %>% select(personal_loan)) %>%
+  rename(.pred_class = .pred_class)
+
+pred_test <- predict(fit_best2, new_data = test_20, type = "class") %>% 
+  bind_cols(test_20 %>% select(personal_loan)) %>%
+  rename(.pred_class = .pred_class)
+
+cm_train <- conf_mat(pred_train, truth = personal_loan, estimate = .pred_class)
+cm_valid2 <- conf_mat(pred_valid, truth = personal_loan, estimate = .pred_class)
+cm_test  <- conf_mat(pred_test,  truth = personal_loan, estimate = .pred_class)
+
+cm_train; cm_valid2; cm_test
+
+metrics_train <- metrics(pred_train, truth = personal_loan, estimate = .pred_class)
+metrics_valid2 <- metrics(pred_valid, truth = personal_loan, estimate = .pred_class)
+metrics_test <- metrics(pred_test,  truth = personal_loan, estimate = .pred_class)
+
+metrics_train; metrics_valid2; metrics_test
+```
+
+## Note:
+Good models perform about the same on training, validation, and test data. If the training accuracy is much higher, the model is overfitting (often caused by too small a k). If all accuracies are low, k may be too large or the data don’t provide enough signal. With only ~9% of customers saying “yes,” it’s not enough to look at accuracy. Measures like sensitivity and balanced accuracy give a clearer picture. If the business prefers to identify more accepters, the cutoff probability could be adjusted.
+
+
+# Reproducibility
+
+```{r}
+sessionInfo()
+```
