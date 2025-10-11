@@ -1,0 +1,190 @@
+---
+title: "Assignment 3 — Naive Bayes (Concise)"
+author: "Tara Jameel"
+output:
+  html_document:
+    toc: false
+    number_sections: false
+  pdf_document: default
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+set.seed(42)
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(readr)
+  library(knitr)
+  library(e1071)   # naiveBayes
+  library(pROC)    # AUC / ROC
+})
+```
+
+## Data Load & Split
+
+```{r}
+df <- read_csv("UniversalBank.csv", show_col_types = FALSE) |>
+  janitor::clean_names()
+
+df <- df |>
+  mutate(cc = credit_card,
+         personal_loan = personal_loan,
+         online = online) |>
+  select(online, cc, personal_loan)
+
+# 60/40 split 
+n <- nrow(df)
+train_idx <- sample(seq_len(n), size = floor(0.6*n), replace = FALSE)
+train <- df[train_idx, ]
+valid <- df[-train_idx, ]
+```
+
+## A) Pivot: rows = (CC, Loan), cols = Online, values = count
+
+```{r}
+pivot_A <- train |>
+  count(cc, personal_loan, online, name = "n") |>
+  pivot_wider(names_from = online, values_from = n, values_fill = 0) |>
+  arrange(cc, personal_loan)
+
+colnames(pivot_A) <- c("CC", "Loan", "Online=0", "Online=1")
+kable(pivot_A, caption = "A. Counts by (CC, Loan) vs Online")
+```
+
+## B) Empirical \\( P(Loan=1 \\mid CC=1, Online=1) \\) from pivot (training set)
+
+```{r}
+# Filter CC=1 and Online=1, compute proportion Loan=1 among those
+den_B <- train |>
+  filter(cc == 1, online == 1) |>
+  tally() |> pull(n)
+
+num_B <- train |>
+  filter(cc == 1, online == 1, personal_loan == 1) |>
+  tally() |> pull(n)
+
+p_B <- ifelse(den_B > 0, num_B / den_B, NA_real_)
+tibble(
+  Metric = "B) P(Loan=1 | CC=1, Online=1) — empirical (pivot)",
+  Value  = round(p_B, 4)
+) |> kable()
+```
+
+## C) Two pivots
+
+```{r}
+# 1) Loan (rows) vs Online (cols)
+pivot_C1 <- train |>
+  count(personal_loan, online, name = "n") |>
+  pivot_wider(names_from = online, values_from = n, values_fill = 0) |>
+  arrange(personal_loan)
+colnames(pivot_C1) <- c("Loan", "Online=0", "Online=1")
+kable(pivot_C1, caption = "C1. Loan vs Online (counts)")
+
+# 2) Loan (rows) vs CC (cols)
+pivot_C2 <- train |>
+  count(personal_loan, cc, name = "n") |>
+  pivot_wider(names_from = cc, values_from = n, values_fill = 0) |>
+  arrange(personal_loan)
+colnames(pivot_C2) <- c("Loan", "CC=0", "CC=1")
+kable(pivot_C2, caption = "C2. Loan vs CC (counts)")
+```
+
+## D) Required probabilities (training set)
+
+```{r}
+loan1 <- train |> filter(personal_loan == 1)
+loan0 <- train |> filter(personal_loan == 0)
+
+p_cc1_given_loan1     <- mean(loan1$cc == 1)
+p_online1_given_loan1 <- mean(loan1$online == 1)
+p_loan1               <- mean(train$personal_loan == 1)
+
+p_cc1_given_loan0     <- mean(loan0$cc == 1)
+p_online1_given_loan0 <- mean(loan0$online == 1)
+p_loan0               <- mean(train$personal_loan == 0)
+
+probs_D <- tibble::tibble(
+  Quantity = c("P(CC=1 | Loan=1)",
+               "P(Online=1 | Loan=1)",
+               "P(Loan=1)",
+               "P(CC=1 | Loan=0)",
+               "P(Online=1 | Loan=0)",
+               "P(Loan=0)"),
+  Value = round(c(p_cc1_given_loan1,
+                  p_online1_given_loan1,
+                  p_loan1,
+                  p_cc1_given_loan0,
+                  p_online1_given_loan0,
+                  p_loan0), 4)
+)
+kable(probs_D, caption = "D. Required probabilities")
+```
+
+## E) Naive Bayes posterior (manual, independence)
+
+\[
+\begin{aligned}
+&\text{num}_1 = P(Loan{=}1)\,P(CC{=}1\mid Loan{=}1)\,P(Online{=}1\mid Loan{=}1) \\
+&\text{num}_0 = P(Loan{=}0)\,P(CC{=}1\mid Loan{=}0)\,P(Online{=}1\mid Loan{=}0) \\
+&P(Loan{=}1 \mid CC{=}1, Online{=}1) = \frac{\text{num}_1}{\text{num}_1 + \text{num}_0}
+\end{aligned}
+\]
+
+```{r}
+num1 <- p_loan1 * p_cc1_given_loan1 * p_online1_given_loan1
+num0 <- p_loan0 * p_cc1_given_loan0 * p_online1_given_loan0
+p_E  <- num1 / (num1 + num0)
+
+tibble(
+  Metric = "E) P(Loan=1 | CC=1, Online=1) — Naive Bayes (manual)",
+  Value  = round(p_E, 4)
+) |> kable()
+```
+
+## F) Compare (B) vs (E)
+
+```{r}
+comparison <- tibble::tibble(
+  Metric = c("B) Empirical (pivot)",
+             "E) Naive Bayes (manual)"),
+  Value  = round(c(p_B, p_E), 4)
+)
+kable(comparison, caption = "F. Comparison: empirical vs NB estimate")
+```
+
+## G) Quantities needed for NB
+
+- \(P(Loan=1), P(Loan=0)\)  
+- \(P(CC=1 \mid Loan=1), P(CC=1 \mid Loan=0)\)  
+- \(P(Online=1 \mid Loan=1), P(Online=1 \mid Loan=0)\)
+
+## (Optional) Train NB model and quick validation
+
+```{r}
+# Fit NB using e1071 with only CC and Online
+train_nb <- train |>
+  mutate(across(everything(), as.factor))
+
+valid_nb <- valid |>
+  mutate(across(everything(), as.factor))
+
+nb_fit <- naiveBayes(personal_loan ~ cc + online, data = train_nb)
+
+# Posterior for (CC=1, Online=1)
+newx <- data.frame(cc = factor(1, levels = levels(train_nb$cc)),
+                   online = factor(1, levels = levels(train_nb$online)))
+post_11 <- predict(nb_fit, newdata = newx, type = "raw")[, "1"]
+
+# Validation AUC (probability of Loan=1 on valid set)
+prob_valid <- predict(nb_fit, newdata = valid_nb, type = "raw")[, "1"]
+auc_val <- tryCatch({
+  as.numeric(pROC::roc(valid_nb$personal_loan, prob_valid, quiet = TRUE)$auc)
+}, error = function(e) NA_real_)
+
+tibble(
+  Metric = c("G) Model P(Loan=1 | CC=1, Online=1) via e1071",
+             "Validation AUC (two-feature NB)"),
+  Value  = round(c(post_11, auc_val), 4)
+) |> kable()
+```
