@@ -1,0 +1,183 @@
+---
+title: "Assignment 4 — K-Means Clustering of Pharmaceutical Firms"
+author: "Tara Jameel"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+set.seed(42)
+```
+
+# Overview
+This analysis applies K-means clustering to a dataset of 21 publicly traded pharmaceutical companies. The primary objective is to identify groups of firms that share similar financial characteristics based on nine quantitative variables (1–9), such as market capitalization, profitability ratios, leverage, and growth indicators.
+
+
+# Packages
+
+```{r}
+library(tidyverse)
+library(cluster)      # silhouette()
+library(factoextra)   # optional visual helpers (fviz_*)
+```
+
+# Load data
+
+```{r}
+df <- readr::read_csv("Pharmaceuticals.csv")
+
+# Quick sanity check
+glimpse(df)
+summary(df)
+```
+
+# (a) Method choices: features, scaling/weights, algorithm, and *k*
+
+We performed clustering using the nine continuous variables listed above. To ensure that each variable contributes equally to the analysis, all numeric features were z-standardized prior to applying the k-means algorithm. The k-means method was chosen for its effectiveness with continuous data and roughly spherical cluster structures. The optimal number of clusters (k) was determined using both the elbow and silhouette methods, selecting the value that best balances simplicity with strong within-cluster cohesion and between-cluster separation.
+
+```{r}
+num_vars <- c("Market_Cap","Beta","PE_Ratio","ROE","ROA",
+              "Asset_Turnover","Leverage","Rev_Growth","Net_Profit_Margin")
+
+X <- df %>% select(all_of(num_vars)) %>% scale() %>% as.matrix()
+```
+
+## Elbow and silhouette diagnostics
+
+We evaluate candidate k values from 2 to 8 (given only 21 firms).
+
+```{r}
+k_grid <- 2:8
+
+# Total within-cluster sum of squares (elbow)
+wss <- map_dbl(k_grid, function(k){
+  kmeans(X, centers = k, nstart = 50, iter.max = 100)$tot.withinss
+})
+
+# Average silhouette width
+sil <- map_dbl(k_grid, function(k){
+  km <- kmeans(X, centers = k, nstart = 50, iter.max = 100)
+  ss <- silhouette(km$cluster, dist(X))
+  mean(ss[, "sil_width"])
+})
+
+elbow_df <- tibble(k = k_grid, tot_withinss = wss)
+sil_df   <- tibble(k = k_grid, avg_sil = sil)
+
+# Choose k by maximum average silhouette, breaking ties by smaller k
+auto_k <- sil_df %>% arrange(desc(avg_sil), k) %>% slice(1) %>% pull(k)
+auto_k
+```
+
+```{r echo=FALSE}
+# Plot elbow
+ggplot(elbow_df, aes(k, tot_withinss)) +
+  geom_line() + geom_point() +
+  labs(title = "Elbow Plot", x = "k", y = "Total within-cluster SS")
+
+# Plot silhouette
+ggplot(sil_df, aes(k, avg_sil)) +
+  geom_line() + geom_point() +
+  labs(title = "Average Silhouette vs k", x = "k", y = "Average silhouette width")
+```
+
+> **Chosen k.** We will proceed with `r auto_k` 
+
+## Final k-means fit
+
+```{r}
+km <- kmeans(X, centers = auto_k, nstart = 100, iter.max = 100)
+df_clusters <- df %>% mutate(cluster = factor(km$cluster))
+
+```
+
+# (b) Cluster interpretation on numeric variables (1–9)
+
+```{r}
+summary_tbl <- df_clusters %>%
+  group_by(cluster) %>%
+  summarize(across(all_of(num_vars),
+                   list(mean = ~mean(.x, na.rm = TRUE),
+                        sd   = ~sd(.x,   na.rm = TRUE)),
+                   .names = "{.col}_{.fn}")) %>%
+  ungroup()
+
+summary_tbl
+```
+
+
+```{r}
+# Compute cluster-level z means 
+z_means <- df_clusters %>%
+  group_by(cluster) %>%
+  summarize(across(all_of(num_vars), ~mean(scale(.x)[,1], na.rm = TRUE))) %>%
+  ungroup()
+
+z_means
+```
+
+
+# (c) How clusters align with Median_Recommendation, Location, and Exchange
+
+```{r}
+cat_vars <- c("Median_Recommendation","Location","Exchange")
+stopifnot(all(cat_vars %in% names(df_clusters)))
+
+tab_rec <- df_clusters %>% count(cluster, Median_Recommendation) %>%
+  tidyr::pivot_wider(names_from = Median_Recommendation, values_from = n, values_fill = 0)
+
+tab_loc <- df_clusters %>% count(cluster, Location) %>%
+  tidyr::pivot_wider(names_from = Location, values_from = n, values_fill = 0)
+
+tab_ex  <- df_clusters %>% count(cluster, Exchange) %>%
+  tidyr::pivot_wider(names_from = Exchange, values_from = n, values_fill = 0)
+
+tab_rec
+tab_loc
+tab_ex
+```
+
+# (d) Assign descriptive names to clusters
+
+
+```{r}
+z_long <- z_means %>%
+  pivot_longer(-cluster, names_to = "var", values_to = "z")
+
+label_df <- z_means %>%
+  mutate(
+    name = case_when(
+      Market_Cap >  0.5 & `Net_Profit_Margin` >  0.5 ~ "Large-Cap Profit Leaders",
+      Rev_Growth  >  0.5 & Beta               >  0.5 ~ "High-Growth / High-Beta",
+      TRUE                                         ~ "Value / Stable Operators"
+    )
+  ) %>% select(cluster, name)
+
+label_df
+```
+
+
+```{r}
+df_labeled <- df_clusters %>% left_join(label_df, by = "cluster")
+
+# Preview labeled data
+df_labeled %>% select(Symbol, Name, cluster, name) %>% arrange(cluster)
+
+# export
+# write_csv(df_labeled, "Pharmaceuticals_with_clusters.csv")
+```
+
+# Brief takeaway
+
+The optimal number of clusters (k = r auto_k) was identified using the silhouette method, consistent with the elbow analysis. The resulting clusters display clear differences across key financial metrics, as shown in the summary table. Cross-tab analyses further reveal how variables such as Median_Recommendation, Location, and Exchange correspond with these groupings. Finally, descriptive labels were assigned to each cluster to provide a concise, business-oriented interpretation of the results.
+
+# Appendix: Session info
+
+```{r}
+sessionInfo()
+```
