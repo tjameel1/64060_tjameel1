@@ -1,0 +1,176 @@
+
+---
+title: "Assignment 5 – Hierarchical Clustering (Cereals)"
+author: "Tara Jameel"
+output: html_document
+---
+
+# 1. Introduction
+
+For this assignment, I worked with the Cereals dataset and used hierarchical clustering to see how different cereals group together based on their nutrition. 
+---
+
+# 2. Load Packages and Data
+
+```{r}
+library(tidyverse)
+library(cluster)
+library(factoextra)
+
+cereals <- read.csv("/Users/lj/Desktop/Cereals.csv", stringsAsFactors = FALSE)
+cereals_clean <- cereals %>% drop_na()
+
+nrow(cereals)
+nrow(cereals_clean)
+
+```
+
+
+# 3. Normalization
+
+```{r}
+num_vars <- c("calories", "protein", "fat", "sodium", "fiber",
+              "carbo", "sugars", "potass", "vitamins",
+              "shelf", "weight", "cups", "rating")
+
+cereals_num <- cereals_clean[, num_vars]
+cereals_scaled <- scale(cereals_num)
+```
+
+Numeric variavles were standarized so one variable doesn’t overpower the others. 
+---
+
+# 4. Hierarchical Clustering
+
+```{r}
+d <- dist(cereals_scaled)
+
+agnes_single   <- agnes(d, method = "single")
+agnes_complete <- agnes(d, method = "complete")
+agnes_average  <- agnes(d, method = "average")
+agnes_ward     <- agnes(d, method = "ward")
+
+agnes_single$ac
+agnes_complete$ac
+agnes_average$ac
+agnes_ward$ac
+```
+
+All four methods were compared, and based on AC values and the dendrograms, Ward is the best choice.
+
+```{r}
+par(mfrow = c(2,2))
+plot(agnes_single,   which.plots = 2, main = "Single")
+plot(agnes_complete, which.plots = 2, main = "Complete")
+plot(agnes_average,  which.plots = 2, main = "Average")
+plot(agnes_ward,     which.plots = 2, main = "Ward")
+par(mfrow = c(1,1))
+```
+
+---
+
+# 5. Choosing the Number of Clusters
+
+```{r}
+hc_ward <- as.hclust(agnes_ward)
+plot(hc_ward, labels = FALSE, hang = -1, main = "Dendrogram – Ward")
+```
+
+```{r}
+sil_fun <- function(k){
+  cl <- cutree(hc_ward, k = k)
+  sil <- silhouette(cl, dist(cereals_scaled))
+  mean(sil[, 3])
+}
+
+sapply(2:7, sil_fun)
+```
+
+---
+
+# 6. Cluster Interpretation
+
+```{r}
+k <- 4  
+clusters <- cutree(hc_ward, k = k)
+
+cereals_clean$cluster <- factor(clusters)
+
+cluster_means <- cereals_clean %>%
+  group_by(cluster) %>%
+  summarise(across(all_of(num_vars), mean))
+
+cluster_means
+```
+
+
+- **Cluster 1 – High-Fiber “Healthy” Cereals:** high fiber, low sugar, fewer calories.  
+- **Cluster 2 – Sugary Kids Cereals:** low fiber, high sugar.  
+- **Cluster 3 – Balanced Cereals:** moderate calories, moderate sugar.  
+- **Cluster 4 – Heavier/Dense Cereals:** higher calories and weight per serving.
+
+---
+
+# 7. Cluster Stability
+
+```{r}
+set.seed(123)
+
+n <- nrow(cereals_scaled)
+idx_A <- sample(1:n, floor(n/2))
+idx_B <- setdiff(1:n, idx_A)
+
+X_A <- cereals_scaled[idx_A, ]
+X_B <- cereals_scaled[idx_B, ]
+
+d_A <- dist(X_A)
+agnes_A <- agnes(d_A, method = "ward")
+hc_A <- as.hclust(agnes_A)
+
+cl_A <- cutree(hc_A, k = k)
+
+centroids_A <- aggregate(X_A, list(cluster = cl_A), mean)
+cent_mat <- as.matrix(centroids_A[, -1])
+rownames(cent_mat) <- centroids_A$cluster
+
+assign_to_cluster <- function(x, centers){
+  dists <- apply(centers, 1, function(c) sum((x - c)^2))
+  which.min(dists)
+}
+
+cl_B_from_A <- apply(X_B, 1, assign_to_cluster, centers = cent_mat)
+
+agnes_all <- agnes(dist(cereals_scaled), method = "ward")
+hc_all <- as.hclust(agnes_all)
+cl_all <- cutree(hc_all, k = k)
+
+table(cl_B_from_A, cl_all[idx_B])
+mean(cl_B_from_A == cl_all[idx_B])
+```
+---
+
+# 8. Healthy Cereals for Schools
+
+```{r}
+healthy_candidates <- cereals_clean %>%
+  filter(fiber >= 5,
+         sugars <= 6,
+         calories <= 110) %>%
+  select(name, calories, protein, fiber, sugars, rating, cluster)
+
+healthy_candidates
+```
+
+To find the “healthy cereals” cluster, I looked for cereals with high fiber and low sugar. 
+
+- All-Bran  
+- 100% Bran  
+- All-Bran Extra Fiber  
+- Bran Flakes  
+---
+
+# 9. Normalized vs Original Data
+
+Clustering works best when the data is normalized. But here it made more sense to look at the original nutrition numbers like the real grams of fiber, sugar, and calories, as they are more relastic and relevant in our daily life. 
+---
+
